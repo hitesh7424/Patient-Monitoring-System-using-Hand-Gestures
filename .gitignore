@@ -1,0 +1,25 @@
+# Python
+venv/
+.venv/
+ENV/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Testing & IDE
+.pytest_cache/
+.coverage
+htmlcov/
+.vscode/
+.idea/
+
+# Streamlit
+.streamlit/
+
+# Data runtime logs (keep directory structure)
+data/*.json
+data/*.csv
+!data/.gitkeep
