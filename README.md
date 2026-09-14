@@ -377,7 +377,7 @@ See [main.py](file:///home/hitesh/Documents/pmuhg/main.py) for the complete impl
 
 ### Live Bedside Monitoring Dashboard Output
 
-![Patient Monitor HUD Overlay](output_sample.png)
+![Patient Monitor HUD Overlay](output.png)
 
 ### Gesture Mapping Reference
 
@@ -395,3 +395,4 @@ See [main.py](file:///home/hitesh/Documents/pmuhg/main.py) for the complete impl
 ## RESULT
 
 The Touchless Patient Monitoring System was successfully built and tested. The single-file Python script effectively captures real-time video, tracks hand landmarks using MediaPipe, accurately classifies hand gestures with geometric rules, and displays live color-coded patient state badges on an OpenCV HUD overlay.
+
