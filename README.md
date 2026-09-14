@@ -1,121 +1,88 @@
-# 🏥 Patient Monitoring System using Hand Gestures
-
-A real-time, touchless bedside patient monitoring dashboard powered by computer vision. The system captures hand gestures from a webcam (or built-in simulated demo feed) using MediaPipe and rule-based landmark geometric classification, mapping them to real-time patient states, logging events, and presenting live analytics.
+# Patient Monitoring System using Hand Gestures
 
 ---
 
-## 🌟 Key Features
-
-- **6 Core Gesture Recognition**: Rule-based hand pose detection using landmark vector math and angle calculation.
-- **Real-Time Patient State Machine**: Automatically transitions states (OK, ALERT, CALL_NURSE, VITALS_CHECK, RESTING, POINTING).
-- **Distress Anomaly Detection**: Detects distress patterns (e.g. 3+ alerts or nurse calls within 15 seconds) and triggers pop-up warnings.
-- **Interactive Streamlit Dashboard**: Dark mode UI with live video stream, landmark skeleton overlay, status badges, metrics, and Plotly analytics.
-- **Persistent Data Logging**: Real-time logging of gestures and patient history to `data/gesture_logs.json` and `data/patient_history.csv`.
-- **CSV Data Export**: Single-click export of patient history logs directly from the sidebar.
-- **Simulated Demo Mode**: Embedded synthetic gesture stream allows full testing and evaluation without requiring physical webcam hardware.
+## AIM
+To design and implement a real-time, touchless bedside patient monitoring application using computer vision with **OpenCV** and **MediaPipe**. The system enables patients with speech or mobility limitations to communicate their condition (e.g., Pain/Alert, Call Nurse, Vitals Check, Resting, Feeling OK) to healthcare providers using intuitive hand gestures.
 
 ---
 
-## 🖐️ Gesture Vocabulary & Patient State Mapping
+## COMPONENTS REQUIRED
 
-| Gesture | Landmark Vector Criteria | Patient State | Icon | Description |
-| :--- | :--- | :--- | :---: | :--- |
-| **Thumbs Up** | Thumb tip extended upward, other 4 fingers folded | `OK` | ✅ | Patient OK / Feeling Good |
-| **Thumbs Down** | Thumb tip pointed downward, other 4 fingers folded | `ALERT` | ⚠️ | Patient Alert / In Pain |
-| **Open Palm** | All 5 fingers extended outward | `CALL_NURSE` | 🆘 | Call for Help / Stop |
-| **Peace Sign** | Index + Middle extended, Ring + Pinky folded | `VITALS_CHECK` | 📊 | Request Vitals Check |
-| **Closed Fist** | All fingers folded into palm | `RESTING` | 😴 | Patient Resting / Sleep |
-| **Point Gesture** | Index finger extended only, others folded | `POINTING` | 👉 | Indicate Direction / Severity |
+### Hardware Components
+1. **Computer System**: PC / Laptop (Linux, Windows, or macOS) with Python 3.9+ support.
+2. **Webcam**: Integrated laptop camera or USB external video camera (minimum 720p recommended).
+
+### Software Components
+1. **Operating System**: Linux (Ubuntu 20.04/22.04/26.04), Windows 10/11, or macOS.
+2. **Python Environment**: Python 3.9 or higher.
+3. **Core Libraries**:
+   - `opencv-python` (v4.8.0+): Real-time frame capture, image processing, and HUD UI rendering.
+   - `mediapipe` (v1.0.0+ / 0.10.x): 21-point 3D hand landmark detection & skeleton tracking.
+   - `numpy` (v1.24.0+): Array manipulation and vector mathematical operations.
 
 ---
 
-## 📁 Project Architecture
+## PROGRAM
 
-```
-pmuhg/
-├── main.py                          # Streamlit application entry point
-├── gesture_detector.py              # MediaPipe hand detection module & landmarks
-├── gesture_classifier.py            # Geometric rule-based classification & smoothing
-├── patient_monitor.py               # Patient state machine & pattern anomaly alerts
-├── utils.py                         # File I/O (JSON/CSV), math & image conversion
-├── config.py                        # System constants, paths & color configurations
-│
-├── test_gesture_classifier.py       # PyTest suite for classifiers & state machine
-│
-├── data/
-│   ├── gesture_logs.json            # JSON log storage
-│   └── patient_history.csv          # CSV log storage
-│
-├── requirements.txt                 # Project dependencies
-├── README.md                        # Setup and usage documentation
-└── .gitignore                       # Git ignore configuration
+The entire system is implemented in a single standalone Python script (`main.py`).
+
+```python
+# Access full source code in main.py
+# Run with: python main.py
 ```
 
----
-
-## 🚀 Quick Start Guide
-
-### 1. Prerequisites
-- Python 3.9 or higher installed on Linux / macOS / Windows.
-
-### 2. Set Up Virtual Environment & Dependencies
-
-```bash
-# Navigate to project directory
-cd /path/to/pmuhg
-
-# Create virtual environment
-python3 -m venv venv
-
-# Activate virtual environment
-# On Linux/macOS:
-source venv/bin/activate
-# On Windows:
-# venv\Scripts\activate
-
-# Upgrade pip & install dependencies
-pip install --upgrade pip
-pip install -r requirements.txt
-```
+See [main.py](file:///home/hitesh/Documents/pmuhg/main.py) for the complete implementation.
 
 ---
 
-## 💻 Running the Application
+## 📋 PROCEDURE
 
-Launch the Streamlit dashboard using the following command:
+1. **Navigate to Repository**:
+   ```bash
+   cd /home/hitesh/Documents/pmuhg
+   ```
 
-```bash
-streamlit run main.py
-```
+2. **Activate Virtual Environment & Install Dependencies**:
+   ```bash
+   source venv/bin/activate
+   pip install -r requirements.txt
+   ```
 
-Open your browser at `http://localhost:8501`.
+3. **Run the Patient Monitor**:
+   ```bash
+   python main.py
+   ```
 
-### Operating Modes:
-1. **Simulated Demo Feed (Default)**: Uses synthetic landmark generators so you can test all 6 gestures without webcam hardware.
-2. **Live Webcam Feed**: Connects to your laptop/USB camera (`cv2.VideoCapture(0)`), rendering real-time pose skeletons and tracking gestures.
-
----
-
-## 🧪 Running Unit Tests
-
-Run the PyTest test suite to verify classification accuracy, temporal smoothing, and patient monitor state transitions:
-
-```bash
-pytest test_gesture_classifier.py -v
-```
-
----
-
-## 📊 Analytics & Reporting
-
-The dashboard features dedicated analytics powered by **Plotly**:
-- **Gesture Frequency Bar Chart**: Distribution of gestures captured over the session.
-- **State Distribution Pie Chart**: Percentage of time spent in each state.
-- **State Progression Line Chart**: Chronological timeline of patient states.
-- **Confidence Trend Graph**: Real-time confidence scores over time.
+4. **Operational Flow**:
+   - The script automatically checks and downloads `hand_landmarker.task` model file if missing.
+   - Initializes webcam feed (`cv2.VideoCapture(0)`).
+   - MediaPipe detects 21 hand landmarks in real-time.
+   - Finger extension & joint orientation coordinates are evaluated to classify 6 hand gestures.
+   - Live video feed renders joint skeleton connections and top HUD card displaying patient state and gesture confidence.
+   - Press **`q`** or **`ESC`** to stop the application and release camera resources.
 
 ---
 
-## 📄 License
+## 🖼️ OUTPUT (PLACEHOLDER IMAGES)
 
-This project is open-source and available under the [MIT License](LICENSE).
+### Live Bedside Monitoring Dashboard Output
+
+![Patient Monitor HUD Overlay](output_sample.png)
+
+### Gesture Mapping Reference
+
+| Gesture | Finger Extension Logic | Mapped Patient State | HUD Color Code | Action Description |
+| :--- | :--- | :---: | :---: | :--- |
+| **Thumbs Up** | Thumb tip raised above IP joint, 4 fingers folded | `OK` | 🟩 Green | Patient is comfortable / OK |
+| **Thumbs Down** | Thumb tip pointed downward, 4 fingers folded | `ALERT` | 🟥 Red | Patient experiencing pain / distress |
+| **Open Palm** | All 5 fingers fully extended | `CALL_NURSE` | 🟧 Orange | Emergency nurse call triggered |
+| **Peace Sign** | Index + Middle extended, Ring + Pinky folded | `VITALS_CHECK` | 🟨 Cyan | Request nurse for vitals check |
+| **Closed Fist** | All 5 fingers folded into palm | `RESTING` | ⬜ Gray | Patient resting or asleep |
+| **Point Gesture**| Index finger extended only, others folded | `POINTING` | 🟦 Blue | Patient pointing / indicating area |
+
+---
+
+## ✅ RESULT
+
+The Touchless Patient Monitoring System was successfully built and tested. The single-file Python script effectively captures real-time video, tracks hand landmarks using MediaPipe, accurately classifies hand gestures with geometric rules, and displays live color-coded patient state badges on an OpenCV HUD overlay.

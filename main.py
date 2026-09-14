@@ -1,509 +1,305 @@
 """
-Patient Monitoring System using Hand Gestures - Multi-Hand Live Application
+Patient Monitoring System using Hand Gestures
+Single-file Python application using OpenCV and MediaPipe (Supports MediaPipe 1.0+ Tasks & Legacy Solutions).
 """
 
-import time
 import os
-from datetime import datetime
-import numpy as np
-import pandas as pd
+import sys
+import math
+import urllib.request
 import cv2
-import streamlit as st
-import plotly.express as px
+import numpy as np
+import mediapipe as mp
 
-from config import (
-    CONFIDENCE_THRESHOLD,
-    GESTURE_HOLD_FRAMES,
-    VIDEO_FPS,
-    HAND_DETECTION_CONFIDENCE,
-    GESTURE_HISTORY_LIMIT,
-    GESTURES,
-    PATIENT_STATES,
-    PATIENT_HISTORY_CSV,
-)
-from utils import (
-    load_patient_history_df,
-    load_gesture_logs,
-    get_current_timestamp,
-)
-from gesture_detector import HandDetector, initialize_hand_detector
-from gesture_classifier import classify_gesture, GestureSmoother
-from patient_monitor import PatientMonitor
+# Model URL for MediaPipe 1.0+ Tasks API
+MODEL_PATH = "hand_landmarker.task"
+MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
 
-# Set Streamlit Page Configuration
-st.set_page_config(
-    page_title="Live Patient Monitoring System - Multi-Hand Vision Dashboard",
-    page_icon="🏥",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+# Hand skeleton line connections (pair indices 0..20)
+HAND_CONNECTIONS = [
+    (0, 1), (1, 2), (2, 3), (3, 4),        # Thumb
+    (0, 5), (5, 6), (6, 7), (7, 8),        # Index
+    (5, 9), (9, 10), (10, 11), (11, 12),   # Middle
+    (9, 13), (13, 14), (14, 15), (15, 16), # Ring
+    (13, 17), (17, 18), (18, 19), (19, 20),# Pinky
+    (0, 17)                                # Palm base
+]
 
-# Custom CSS for Dark Mode & Medical Status Badges
-st.markdown(
+# Gesture Vocabulary & Patient State Configurations
+GESTURE_MAP = {
+    "Thumbs Up": {
+        "state": "OK",
+        "label": "Patient OK / Feeling Good",
+        "color": (0, 255, 0),       # Green (BGR)
+    },
+    "Thumbs Down": {
+        "state": "ALERT",
+        "label": "Patient Alert / Pain Distress",
+        "color": (0, 0, 255),       # Red (BGR)
+    },
+    "Open Palm": {
+        "state": "CALL_NURSE",
+        "label": "Call Nurse / Emergency Help",
+        "color": (0, 140, 255),     # Orange (BGR)
+    },
+    "Peace Sign": {
+        "state": "VITALS_CHECK",
+        "label": "Request Vitals Check",
+        "color": (255, 255, 0),     # Cyan (BGR)
+    },
+    "Closed Fist": {
+        "state": "RESTING",
+        "label": "Patient Resting / Sleep Mode",
+        "color": (180, 180, 180),   # Gray (BGR)
+    },
+    "Point": {
+        "state": "POINTING",
+        "label": "Indicate Direction / Severity",
+        "color": (255, 100, 0),     # Blue (BGR)
+    },
+    "Unknown": {
+        "state": "UNKNOWN",
+        "label": "No Active Gesture Recognized",
+        "color": (100, 100, 100),   # Dark Gray (BGR)
+    },
+}
+
+
+def ensure_model_downloaded():
+    """Ensure MediaPipe Tasks hand_landmarker.task model is present locally."""
+    if not os.path.exists(MODEL_PATH):
+        print(f"Downloading MediaPipe hand landmarker model to '{MODEL_PATH}'...")
+        try:
+            urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+            print("Model downloaded successfully!")
+        except Exception as e:
+            print(f"Failed to download model: {e}")
+
+
+def calculate_distance(p1, p2) -> float:
+    """Calculate Euclidean distance between two 3D landmark points."""
+    x1 = getattr(p1, 'x', p1[0] if isinstance(p1, (list, tuple)) else 0)
+    y1 = getattr(p1, 'y', p1[1] if isinstance(p1, (list, tuple)) else 0)
+    z1 = getattr(p1, 'z', p1[2] if isinstance(p1, (list, tuple)) and len(p1) > 2 else 0)
+
+    x2 = getattr(p2, 'x', p2[0] if isinstance(p2, (list, tuple)) else 0)
+    y2 = getattr(p2, 'y', p2[1] if isinstance(p2, (list, tuple)) else 0)
+    z2 = getattr(p2, 'z', p2[2] if isinstance(p2, (list, tuple)) and len(p2) > 2 else 0)
+
+    return math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2 + (z1 - z2) ** 2)
+
+
+def get_finger_states(landmarks):
     """
-    <style>
-    .main { background-color: #0e1117; }
-    .stApp { color: #ffffff; }
-    .patient-status-card {
-        border-radius: 12px;
-        padding: 24px;
-        color: white;
-        margin-bottom: 20px;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.4);
-        text-align: center;
-        transition: all 0.3s ease;
-    }
-    .metric-box {
-        background-color: #1e222a;
-        border-radius: 10px;
-        padding: 12px;
-        border-left: 4px solid #007bff;
-        margin-bottom: 10px;
-    }
-    .alert-banner {
-        background-color: #dc3545;
-        color: white;
-        padding: 15px;
-        border-radius: 8px;
-        font-weight: bold;
-        font-size: 1.1em;
-        margin-bottom: 15px;
-        text-align: center;
-        box-shadow: 0 0 10px rgba(220, 53, 69, 0.7);
-    }
-    .stProgress > div > div > div > div {
-        background-color: #007bff;
-    }
-    .gesture-guide-item {
-        background: #1a1e24;
-        padding: 8px 12px;
-        border-radius: 6px;
-        margin-bottom: 6px;
-        font-size: 0.9em;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-
-@st.cache_resource
-def get_patient_monitor():
-    """Singleton PatientMonitor state machine."""
-    return PatientMonitor(confidence_threshold=CONFIDENCE_THRESHOLD)
-
-
-@st.cache_resource
-def get_hand_detector():
-    """Singleton MediaPipe multi-hand detector (max 2 hands)."""
-    return initialize_hand_detector(
-        min_detection_confidence=HAND_DETECTION_CONFIDENCE,
-        min_tracking_confidence=0.7
-    )
-
-
-def process_camera_frame(frame, detector, monitor, smoothers_dict, conf_thresh, show_landmarks, enable_smoothing):
+    Returns boolean tuple (thumb_ext, index_ext, middle_ext, ring_ext, pinky_ext)
+    indicating whether each finger is extended.
     """
-    Process camera frame with multi-hand landmark detection (Left & Right hands).
-    Returns: (processed_rgb_frame, dict_of_detected_hand_gestures)
-    """
-    if frame is None:
-        return None, {}
+    wrist = landmarks[0]
 
-    # Mirror frame for intuitive viewing
-    frame = cv2.flip(frame, 1)
+    dist_thumb_tip = calculate_distance(landmarks[4], wrist)
+    dist_thumb_mcp = calculate_distance(landmarks[2], wrist)
+    thumb_ext = dist_thumb_tip > dist_thumb_mcp * 1.2
+
+    index_ext = calculate_distance(landmarks[8], wrist) > calculate_distance(landmarks[6], wrist) * 1.1
+    middle_ext = calculate_distance(landmarks[12], wrist) > calculate_distance(landmarks[10], wrist) * 1.1
+    ring_ext = calculate_distance(landmarks[16], wrist) > calculate_distance(landmarks[14], wrist) * 1.1
+    pinky_ext = calculate_distance(landmarks[20], wrist) > calculate_distance(landmarks[18], wrist) * 1.1
+
+    return thumb_ext, index_ext, middle_ext, ring_ext, pinky_ext
+
+
+def classify_gesture(landmarks):
+    """
+    Classify 21 MediaPipe hand landmarks into one of 6 patient gestures.
+    Returns: (gesture_name, confidence)
+    """
+    if not landmarks or len(landmarks) < 21:
+        return "Unknown", 0.0
+
+    thumb_ext, index_ext, middle_ext, ring_ext, pinky_ext = get_finger_states(landmarks)
+
+    thumb_tip = landmarks[4]
+    thumb_ip = landmarks[3]
+
+    four_fingers_folded = (not index_ext) and (not middle_ext) and (not ring_ext) and (not pinky_ext)
+    all_five_extended = index_ext and middle_ext and ring_ext and pinky_ext and thumb_ext
+
+    # 1. Thumbs Up (Thumb tip above IP joint, 4 fingers folded)
+    if four_fingers_folded and thumb_tip.y < thumb_ip.y:
+        return "Thumbs Up", 0.95
+
+    # 2. Thumbs Down (Thumb tip below IP joint, 4 fingers folded)
+    if four_fingers_folded and thumb_tip.y > thumb_ip.y:
+        return "Thumbs Down", 0.94
+
+    # 3. Open Palm (All 5 fingers extended outward)
+    if all_five_extended or (index_ext and middle_ext and ring_ext and pinky_ext):
+        return "Open Palm", 0.96
+
+    # 4. Peace Sign (Index & Middle extended, Ring & Pinky folded)
+    if index_ext and middle_ext and (not ring_ext) and (not pinky_ext):
+        return "Peace Sign", 0.92
+
+    # 5. Point (Index finger extended ONLY)
+    if index_ext and (not middle_ext) and (not ring_ext) and (not pinky_ext):
+        return "Point", 0.90
+
+    # 6. Closed Fist (All fingers folded)
+    if four_fingers_folded:
+        return "Closed Fist", 0.93
+
+    return "Unknown", 0.50
+
+
+def draw_hand_landmarks(frame, landmarks):
+    """Draw skeleton lines and joint nodes on OpenCV frame."""
     h, w, _ = frame.shape
+    pts = [(int(getattr(lm, 'x', 0) * w), int(getattr(lm, 'y', 0) * h)) for lm in landmarks]
 
-    # Detect up to 2 hands
-    results, handedness = detector.detect_hands(frame)
+    # Draw skeleton connection lines
+    for p1_idx, p2_idx in HAND_CONNECTIONS:
+        if p1_idx < len(pts) and p2_idx < len(pts):
+            cv2.line(frame, pts[p1_idx], pts[p2_idx], (0, 255, 127), 2)
 
-    detected_hands_summary = {}
+    # Draw joint dots
+    for idx, pt in enumerate(pts):
+        color = (0, 215, 255) if idx in [4, 8, 12, 16, 20] else (255, 100, 0)
+        radius = 6 if idx in [4, 8, 12, 16, 20] else 4
+        cv2.circle(frame, pt, radius, color, -1)
+        cv2.circle(frame, pt, radius + 1, (255, 255, 255), 1)
 
-    if results and results.multi_hand_landmarks:
-        # Draw skeleton overlays for all detected hands
-        if show_landmarks:
-            frame = detector.draw_hand_landmarks(frame, results)
 
-        for i, raw_lm in enumerate(results.multi_hand_landmarks):
-            # Determine Left / Right hand label for mirrored view
-            if handedness and len(handedness) > i:
-                hand_label = handedness[i]
-            else:
-                hand_label = "Right" if i == 0 else "Left"
+class MultiVersionHandDetector:
+    """Supports both MediaPipe 1.0+ Tasks API and Legacy mp.solutions API."""
 
-            g_name, conf = classify_gesture(raw_lm)
+    def __init__(self):
+        self.use_tasks_api = False
+        self.landmarker = None
+        self.legacy_hands = None
 
-            # Apply per-hand temporal smoothing
-            if enable_smoothing and hand_label in smoothers_dict:
-                g_name, conf = smoothers_dict[hand_label].add_prediction(g_name, conf)
+        # Try initializing Tasks API first (MediaPipe 1.0+)
+        try:
+            from mediapipe.tasks import python
+            from mediapipe.tasks.python import vision
 
-            # Update patient state machine
-            current_state, state_changed, alert = monitor.update_state(g_name, conf, hand=hand_label)
+            ensure_model_downloaded()
+            if os.path.exists(MODEL_PATH):
+                base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
+                options = vision.HandLandmarkerOptions(
+                    base_options=base_options,
+                    num_hands=2,
+                    min_hand_detection_confidence=0.7,
+                    min_hand_presence_confidence=0.7,
+                )
+                self.landmarker = vision.HandLandmarker.create_from_options(options)
+                self.use_tasks_api = True
+                print("Initialized MediaPipe Tasks API successfully.")
+        except Exception as e:
+            print(f"Tasks API initialization fallback: {e}")
 
-            detected_hands_summary[hand_label] = {
-                "gesture": g_name,
-                "confidence": conf,
-                "state": current_state
-            }
+        # Fallback to Legacy Solutions API if available (MediaPipe < 1.0)
+        if not self.use_tasks_api and hasattr(mp, "solutions") and hasattr(mp.solutions, "hands"):
+            try:
+                self.legacy_hands = mp.solutions.hands.Hands(
+                    static_image_mode=False,
+                    max_num_hands=2,
+                    min_detection_confidence=0.7,
+                    min_tracking_confidence=0.7,
+                )
+                print("Initialized Legacy MediaPipe Solutions API successfully.")
+            except Exception as e:
+                print(f"Legacy Solutions API error: {e}")
 
-            # Draw HUD Box overlay for each detected hand
-            box_x = 10 if i == 0 else max(10, w - 360)
-            box_color = (0, 255, 127) if g_name != "Unknown" else (80, 80, 80)
-            
-            cv2.rectangle(frame, (box_x, 10), (box_x + 350, 90), (0, 0, 0), -1)
-            cv2.rectangle(frame, (box_x, 10), (box_x + 350, 90), box_color, 2)
-            cv2.putText(frame, f"{hand_label} Hand: {g_name}", (box_x + 12, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.70, (255, 255, 255), 2)
-            cv2.putText(frame, f"State: {current_state} ({conf*100:.0f}%)", (box_x + 12, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.60, (0, 255, 200), 2)
+    def detect(self, rgb_frame):
+        """Process RGB image frame and return list of hand landmark sets."""
+        if self.use_tasks_api and self.landmarker is not None:
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+            result = self.landmarker.detect(mp_image)
+            return result.hand_landmarks if result and result.hand_landmarks else []
 
-    # Convert BGR to RGB for Streamlit rendering
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    
-    return rgb_frame, detected_hands_summary
+        if self.legacy_hands is not None:
+            results = self.legacy_hands.process(rgb_frame)
+            if results and results.multi_hand_landmarks:
+                return [hand_lm.landmark for hand_lm in results.multi_hand_landmarks]
+
+        return []
 
 
 def main():
-    st.markdown("# 🏥 Real-Time Touchless Patient Monitoring System")
-    st.markdown("**Multi-Hand Computer Vision Gesture Recognition Bedside Monitor**")
-    st.divider()
+    print("==================================================")
+    print(" 🏥 Patient Monitoring System (OpenCV + MediaPipe)")
+    print("==================================================")
 
-    # Load Singletons
-    monitor = get_patient_monitor()
-    detector = get_hand_detector()
+    detector = MultiVersionHandDetector()
 
-    # Sidebar Controls
-    st.sidebar.markdown("## ⚙️ Live Camera Controls")
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("Error: Could not open webcam device 0.")
+        return
 
-    camera_index = st.sidebar.selectbox(
-        "Camera Device Index",
-        options=[0, 1, 2],
-        format_func=lambda x: f"Camera Index {x} ({'Primary' if x==0 else 'Secondary'})",
-        index=0,
-    )
+    print("Webcam feed active. Press 'q' or 'ESC' to exit.")
 
-    conf_thresh = st.sidebar.slider(
-        "Gesture Confidence Threshold",
-        min_value=0.50,
-        max_value=1.00,
-        value=CONFIDENCE_THRESHOLD,
-        step=0.05,
-    )
-    monitor.confidence_threshold = conf_thresh
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            print("Failed to capture video frame.")
+            break
 
-    target_fps = st.sidebar.slider(
-        "Target FPS", min_value=15, max_value=60, value=VIDEO_FPS, step=5
-    )
+        # Mirror frame horizontally for user view
+        frame = cv2.flip(frame, 1)
+        h, w, _ = frame.shape
 
-    show_landmarks = st.sidebar.toggle("Show Hand Skeleton Landmarks", value=True)
-    enable_smoothing = st.sidebar.toggle("Enable Temporal Gesture Smoothing", value=True)
+        # Convert OpenCV BGR frame to RGB for MediaPipe
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        hands_landmarks_list = detector.detect(rgb_frame)
 
-    st.sidebar.divider()
-    
-    # PERMANENT SIDEBAR GESTURE GUIDE
-    with st.sidebar.expander("📖 Gesture Guide Reference", expanded=True):
-        st.markdown(
-            """
-            * **✅ Thumbs Up**: Patient OK (`OK`)
-            * **⚠️ Thumbs Down**: In Pain (`ALERT`)
-            * **🆘 Open Palm**: Help (`CALL_NURSE`)
-            * **📊 Peace Sign**: Vitals (`VITALS_CHECK`)
-            * **😴 Closed Fist**: Sleep (`RESTING`)
-            * **👉 Point**: Severity (`POINTING`)
-            """
-        )
+        detected_gesture = "No Hand Detected"
+        patient_state = "UNKNOWN"
+        status_label = "Wave hand in front of camera..."
+        color = GESTURE_MAP["Unknown"]["color"]
+        confidence = 0.0
 
-    st.sidebar.divider()
-    st.sidebar.markdown("## 📁 Log & History Operations")
+        if hands_landmarks_list:
+            for landmarks in hands_landmarks_list:
+                # Draw skeleton overlay
+                draw_hand_landmarks(frame, landmarks)
 
-    # Export CSV Button
-    df_history = load_patient_history_df()
-    csv_data = df_history.to_csv(index=False).encode("utf-8")
-    st.sidebar.download_button(
-        label="📥 Download History CSV",
-        data=csv_data,
-        file_name=f"patient_gesture_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-        mime="text/csv",
-    )
+                # Classify gesture
+                gesture, conf = classify_gesture(landmarks)
+                if conf > confidence:
+                    confidence = conf
+                    detected_gesture = gesture
+                    info = GESTURE_MAP.get(gesture, GESTURE_MAP["Unknown"])
+                    patient_state = info["state"]
+                    status_label = info["label"]
+                    color = info["color"]
 
-    if st.sidebar.button("🗑️ Reset Session Logs"):
-        monitor.clear_history()
-        st.sidebar.success("Session logs reset successfully!")
-        st.rerun()
+        # Draw HUD Interface Overlay
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (15, 15), (480, 145), (15, 15, 15), -1)
+        cv2.addWeighted(overlay, 0.75, frame, 0.25, 0, frame)
+        cv2.rectangle(frame, (15, 15), (480, 145), color, 2)
 
-    # Main Tabs
-    tab_live, tab_browser_cam, tab_history, tab_analytics, tab_guide = st.tabs(
-        [
-            "📹 Live Multi-Hand Stream",
-            "📸 Browser Snapshot Cam",
-            "📜 Gesture Log & Timeline",
-            "📊 Patient Analytics",
-            "📖 Gesture Guide",
-        ]
-    )
+        # Header & Status Text
+        cv2.putText(frame, "PATIENT BEDSIDE MONITOR", (30, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
+        cv2.putText(frame, f"State: {patient_state}", (30, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.95, color, 2)
+        cv2.putText(frame, f"Gesture: {detected_gesture} ({int(confidence * 100)}%)", (30, 112), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (220, 220, 220), 1)
+        cv2.putText(frame, f"Info: {status_label}", (30, 133), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (180, 180, 180), 1)
 
-    # -------------------------------------------------------------
-    # TAB 1: LIVE MULTI-HAND CAMERA STREAM
-    # -------------------------------------------------------------
-    with tab_live:
-        st.markdown("### 📽️ Live Bedside Video Monitoring (Both Hands Active)")
+        # Footer / Exit instruction
+        cv2.putText(frame, "Press 'q' or ESC to exit", (15, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
-        col_cam, col_status = st.columns([1.3, 1.0])
+        # Render Frame Window
+        cv2.imshow("Patient Monitor - Hand Gesture Recognition", frame)
 
-        with col_cam:
-            run_live = st.toggle("🔴 Stream Live Camera Feed", value=True, help="Toggle live webcam feed capture.")
-            video_placeholder = st.empty()
-            info_placeholder = st.empty()
+        # Keypress Handling
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q') or key == 27:  # 'q' or ESC key
+            break
 
-            # PROMINENT GESTURE REFERENCE GRID DIRECTLY UNDER CAMERA FEED
-            with st.expander("📖 Gesture Quick Reference Guide (Supported Gestures)", expanded=True):
-                g1, g2, g3 = st.columns(3)
-                with g1:
-                    st.markdown("✅ **Thumbs Up**: Patient OK")
-                    st.markdown("⚠️ **Thumbs Down**: In Pain / Alert")
-                with g2:
-                    st.markdown("🆘 **Open Palm**: Call Nurse / Help")
-                    st.markdown("📊 **Peace Sign**: Check Vitals")
-                with g3:
-                    st.markdown("😴 **Closed Fist**: Resting / Sleep")
-                    st.markdown("👉 **Point**: Indicate Severity")
-
-        with col_status:
-            st.markdown("### 🏥 Current Patient Status")
-            status_card_ph = st.empty()
-            alert_banner_ph = st.empty()
-
-            m1, m2 = st.columns(2)
-            with m1:
-                metric_gesture_ph = st.empty()
-            with m2:
-                metric_conf_ph = st.empty()
-
-            st.markdown("#### Real-time Detection Confidence")
-            progress_ph = st.empty()
-
-            st.markdown("#### Recent Gesture Logs")
-            table_ph = st.empty()
-
-        if run_live:
-            cap = cv2.VideoCapture(camera_index)
-            if not cap.isOpened():
-                info_placeholder.error(f"Error: Unable to open camera index {camera_index}. Please check device connection or select another index in the sidebar.")
-            else:
-                smoothers_dict = {
-                    "Left": GestureSmoother(window_size=GESTURE_HOLD_FRAMES),
-                    "Right": GestureSmoother(window_size=GESTURE_HOLD_FRAMES),
-                }
-                
-                try:
-                    while run_live:
-                        ret, frame = cap.read()
-                        if not ret:
-                            info_placeholder.warning("Waiting for camera frames...")
-                            time.sleep(0.1)
-                            continue
-
-                        rgb_frame, detected_hands = process_camera_frame(
-                            frame=frame,
-                            detector=detector,
-                            monitor=monitor,
-                            smoothers_dict=smoothers_dict,
-                            conf_thresh=conf_thresh,
-                            show_landmarks=show_landmarks,
-                            enable_smoothing=enable_smoothing,
-                        )
-
-                        # 1. Update Video Frame
-                        video_placeholder.image(rgb_frame, channels="RGB")
-
-                        # 2. Update Side Panel Status Card
-                        state_info = monitor.get_current_state()
-                        state_color = state_info["badge_color"]
-                        status_card_ph.markdown(
-                            f"""
-                            <div class="patient-status-card" style="background-color: {state_color};">
-                                <h1 style="margin: 0; font-size: 3em;">{state_info['icon']} {state_info['state']}</h1>
-                                <h3 style="margin-top: 10px; opacity: 0.95;">{state_info['label']}</h3>
-                                <p style="margin-bottom: 0;">Updated: {state_info['timestamp'][11:19]}</p>
-                            </div>
-                            """,
-                            unsafe_allow_html=True,
-                        )
-
-                        # 3. Update Active Alert Banner
-                        if monitor.active_alerts:
-                            latest_alert = monitor.active_alerts[-1]
-                            alert_banner_ph.markdown(
-                                f"""
-                                <div class="alert-banner">
-                                    🚨 DISTRESS ALERT: {latest_alert['reason']}
-                                </div>
-                                """,
-                                unsafe_allow_html=True,
-                            )
-                        else:
-                            alert_banner_ph.empty()
-
-                        # 4. Update Metrics & Progress Bar
-                        if detected_hands:
-                            hand_names = list(detected_hands.keys())
-                            g_summary = " | ".join([f"{h}: {detected_hands[h]['gesture']}" for h in hand_names])
-                            max_conf = max([detected_hands[h]['confidence'] for h in hand_names])
-                            metric_gesture_ph.metric("Live Gestures", g_summary)
-                            metric_conf_ph.metric("Confidence", f"{max_conf*100:.1f}%")
-                            progress_ph.progress(min(max(float(max_conf), 0.0), 1.0))
-                        else:
-                            metric_gesture_ph.metric("Live Gestures", f"{state_info['icon']} {state_info['last_gesture']}")
-                            metric_conf_ph.metric("Confidence", f"{state_info['confidence']*100:.1f}%")
-                            progress_ph.progress(min(max(float(state_info["confidence"]), 0.0), 1.0))
-
-                        # 5. Update Recent Gesture Logs Table
-                        recent_items = monitor.get_gesture_history(limit=5)
-                        if recent_items:
-                            table_ph.dataframe(
-                                pd.DataFrame(recent_items)[["timestamp", "icon", "gesture", "patient_state", "confidence", "hand"]],
-                                hide_index=True,
-                            )
-
-                        time.sleep(1.0 / target_fps)
-                finally:
-                    cap.release()
-        else:
-            info_placeholder.info("Click 'Stream Live Camera Feed' above to resume live camera monitoring.")
-
-    # -------------------------------------------------------------
-    # TAB 2: BROWSER SNAPSHOT CAM
-    # -------------------------------------------------------------
-    with tab_browser_cam:
-        st.markdown("### 📸 Browser Camera Capture")
-        st.write("Capture live frame directly through browser webcam interface:")
-        
-        img_file_buffer = st.camera_input("Take Live Photo for Detection")
-        if img_file_buffer is not None:
-            bytes_data = img_file_buffer.getvalue()
-            cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
-
-            smoothers_dict = {
-                "Left": GestureSmoother(window_size=GESTURE_HOLD_FRAMES),
-                "Right": GestureSmoother(window_size=GESTURE_HOLD_FRAMES),
-            }
-            rgb_frame, detected_hands = process_camera_frame(
-                frame=cv_img,
-                detector=detector,
-                monitor=monitor,
-                smoothers_dict=smoothers_dict,
-                conf_thresh=conf_thresh,
-                show_landmarks=show_landmarks,
-                enable_smoothing=enable_smoothing,
-            )
-
-            st.image(rgb_frame, caption=f"Detected Hands: {detected_hands}")
-
-    # -------------------------------------------------------------
-    # TAB 3: GESTURE LOG & TIMELINE
-    # -------------------------------------------------------------
-    with tab_history:
-        st.markdown("### 📜 Session Gesture Log")
-
-        recent_logs = monitor.get_gesture_history(limit=50)
-        if recent_logs:
-            df_logs = pd.DataFrame(recent_logs)
-            st.dataframe(
-                df_logs[["timestamp", "icon", "gesture", "patient_state", "confidence", "hand"]],
-                hide_index=True,
-            )
-        else:
-            st.info("No gestures logged yet. Start live camera feed to detect gestures.")
-
-        st.divider()
-        st.markdown("### ⏱️ Patient State Timeline")
-        df_hist = load_patient_history_df()
-        if not df_hist.empty:
-            fig_timeline = px.line(
-                df_hist,
-                x="timestamp",
-                y="patient_state",
-                color="gesture",
-                markers=True,
-                title="Patient State Timeline Progression",
-                template="plotly_dark",
-            )
-            st.plotly_chart(fig_timeline)
-
-    # -------------------------------------------------------------
-    # TAB 4: ANALYTICS
-    # -------------------------------------------------------------
-    with tab_analytics:
-        st.markdown("### 📊 Patient Analytics & Frequency Reports")
-
-        df_hist = load_patient_history_df()
-        if df_hist.empty:
-            st.warning("No historical data recorded yet.")
-        else:
-            c1, c2 = st.columns(2)
-
-            with c1:
-                st.markdown("#### Gesture Frequency Bar Chart")
-                counts = df_hist["gesture"].value_counts().reset_index()
-                counts.columns = ["Gesture", "Count"]
-                fig_bar = px.bar(
-                    counts,
-                    x="Gesture",
-                    y="Count",
-                    color="Gesture",
-                    text_auto=True,
-                    template="plotly_dark",
-                    color_discrete_sequence=px.colors.qualitative.Bold,
-                )
-                st.plotly_chart(fig_bar)
-
-            with c2:
-                st.markdown("#### Patient State Share")
-                state_counts = df_hist["patient_state"].value_counts().reset_index()
-                state_counts.columns = ["State", "Count"]
-                fig_pie = px.pie(
-                    state_counts,
-                    names="State",
-                    values="Count",
-                    hole=0.4,
-                    template="plotly_dark",
-                    color_discrete_sequence=px.colors.qualitative.Pastel,
-                )
-                st.plotly_chart(fig_pie)
-
-            st.divider()
-            st.markdown("#### Detection Confidence Trend")
-            fig_conf = px.area(
-                df_hist,
-                x="timestamp",
-                y="confidence",
-                color="gesture",
-                title="Confidence Levels Over Time",
-                template="plotly_dark",
-            )
-            st.plotly_chart(fig_conf)
-
-    # -------------------------------------------------------------
-    # TAB 5: GESTURE GUIDE
-    # -------------------------------------------------------------
-    with tab_guide:
-        st.markdown("### 📖 Gesture Vocabulary Reference")
-
-        g_col1, g_col2 = st.columns(2)
-        cards = list(GESTURES.items())
-        for idx, (g_name, g_info) in enumerate(cards):
-            if g_name == "Unknown":
-                continue
-            target_col = g_col1 if idx % 2 == 0 else g_col2
-            with target_col:
-                st.markdown(
-                    f"""
-                    <div class="metric-box" style="border-left-color: {g_info['badge_color']};">
-                        <h3>{g_info['icon']} {g_name}</h3>
-                        <p><strong>Mapped State:</strong> <code>{g_info['state']}</code></p>
-                        <p><strong>Meaning:</strong> {g_info['label']}</p>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+    cap.release()
+    cv2.destroyAllWindows()
+    print("Application closed successfully.")
 
 
 if __name__ == "__main__":
